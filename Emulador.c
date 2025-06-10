@@ -3,322 +3,217 @@
 #include <string.h>
 
 // Tipos
+typedef unsigned char byte;
+typedef unsigned int palavra;
+typedef unsigned long int microinstrucao;
 
-typedef unsigned char byte; // 8 bits
-typedef unsigned int palavra; // 32 bits
-typedef unsigned long int microinstrucao; // 64 bits, no caso de acordo com a aquitetura cada microinstrução usa apenas 36bits de espaço 
+// Constantes
+#define TAM_MEM 100000000
+#define TAM_ARMAZENAMENTO 512
 
-// Registradores 
+// Registradores
+typedef struct {
+    palavra MAR, MDR, PC;
+    byte MBR;
+    palavra SP, LV, TOS, OPC, CPP, H;
+    palavra MPC;
+    microinstrucao MIR;
+} Registradores;
 
-palavra MAR = 0, MDR = 0, PC = 0; // Acesso da Memoria
-byte MBR = 0;			  // Acesso da Memoria
+Registradores regs;
 
-palavra SP = 0, LV = 0, TOS = 0, // Operação da ULA 
-		OPC = 0, CPP = 0, H = 0; // Operação da ULA 
+// Sinais de Controle
+typedef struct {
+    byte B, Operacao, Deslocador, MEM, Pulo;
+    palavra C;
+} SinaisControle;
 
-microinstrucao MIR; // Contem a Microinstrução Atual
-palavra MPC = 0; // Contem o endereco para a proxima Microinstrução
+SinaisControle sinal;
+
+// Memória e armazenamento de microprograma
+byte Memoria[TAM_MEM];
+microinstrucao Armazenamento[TAM_ARMAZENAMENTO];
 
 // Barramentos
+palavra busB, busC;
 
-palavra Barramento_B, Barramento_C;
-
-// Flip-Flops
-
+// Flags
 byte N, Z;
 
-// Auxiladores para Decodificar Microinstrução
-
-byte MIR_B, MIR_Operacao, MIR_Deslocador, MIR_MEM, MIR_pulo;
-palavra MIR_C;
-
-
-// Armazenamento de Controle
-
-microinstrucao Armazenamento[512];
-
-// Memoria Principal
-
-byte Memoria[100000000];
-
-// Prototipo das Funções
-
-void carregar_microprogram_de_controle();
-void carregar_programa(const char *programa);
-void exibir_processos();
+// Prototipação
+void carregar_microprograma();
+void carregar_programa(const char *arquivo);
 void decodificar_microinstrucao();
 void atribuir_barramento_B();
 void realizar_operacao_ALU();
 void atribuir_barramento_C();
 void operar_memoria();
 void pular();
+void exibir_estado();
+void print_bin(void *valor, size_t bytes);
 
-void binario(void* valor, int tipo);
+// Função principal
+int main(int argc, const char *argv[]) {
+    if (argc < 2) {
+        fprintf(stderr, "Uso: %s programa.bin\n", argv[0]);
+        return EXIT_FAILURE;
+    }
 
+    carregar_microprograma();
+    carregar_programa(argv[1]);
 
+    while (1) {
+        exibir_estado();
 
-// Laço Principal
+        regs.MIR = Armazenamento[regs.MPC];
 
-int main(int argc, const char *argv[]){
-	carregar_microprogram_de_controle();
-	carregar_programa(argv[1]);
-	while(1){
-		exibir_processos();
-		MIR = Armazenamento[MPC];
+        decodificar_microinstrucao();
+        atribuir_barramento_B();
+        realizar_operacao_ALU();
+        atribuir_barramento_C();
+        operar_memoria();
+        pular();
+    }
 
-		
-		decodificar_microinstrucao();
-		atribuir_barramento_B();
-		realizar_operacao_ALU();
-		atribuir_barramento_C();
-		operar_memoria();
-		pular();
-	}
-
-	return 0;
+    return 0;
 }
 
-// Implementação das Funções
+// Implementações
+void carregar_microprograma() {
+    FILE *arquivo = fopen("microprog.rom", "rb");
+    if (!arquivo) {
+        perror("Erro ao abrir microprog.rom");
+        exit(EXIT_FAILURE);
+    }
 
-void carregar_microprogram_de_controle(){
-	FILE* MicroPrograma;
-	MicroPrograma = fopen("microprog.rom", "rb");
-
-	if(MicroPrograma != NULL){
-		fread(Armazenamento, sizeof(microinstrucao), 512, MicroPrograma);
-		
-		fclose(MicroPrograma);
-	}
-
+    fread(Armazenamento, sizeof(microinstrucao), TAM_ARMAZENAMENTO, arquivo);
+    fclose(arquivo);
 }
 
-void carregar_programa(const char* prog){
-	FILE* Programa;
-	palavra tamanho;
-	byte tamanho_temp[4];
-	Programa = fopen(prog, "rb");
+void carregar_programa(const char *arquivo_nome) {
+    FILE *arquivo = fopen(arquivo_nome, "rb");
+    if (!arquivo) {
+        perror("Erro ao abrir o programa");
+        exit(EXIT_FAILURE);
+    }
 
-	if(Programa != NULL){
-		fread(tamanho_temp, sizeof(byte), 4, Programa); // Lendo o tamanho em bytes do Programa
-		memcpy(&tamanho, tamanho_temp, 4);
+    byte tamanho_bytes[4];
+    if (fread(tamanho_bytes, sizeof(byte), 4, arquivo) != 4) {
+        fprintf(stderr, "Erro ao ler tamanho do programa.\n");
+        fclose(arquivo);
+        exit(EXIT_FAILURE);
+    }
 
-		fread(Memoria, sizeof(byte), 20, Programa); // Lendo os 20 bytes de Inicialização
+    palavra tamanho;
+    memcpy(&tamanho, tamanho_bytes, 4);
 
-		fread(&Memoria[0x0401], sizeof(byte), tamanho - 20, Programa); // Lendo o Programa
+    fread(Memoria, sizeof(byte), 20, arquivo);
+    fread(&Memoria[0x401], sizeof(byte), tamanho - 20, arquivo);
 
-	}
+    fclose(arquivo);
 }
 
-void decodificar_microinstrucao(){
-	MIR_B = (MIR) & 0b1111;
-	MIR_MEM = (MIR >> 4) & 0b111;
-	MIR_C = (MIR >> 7) & 0b111111111;
-	MIR_Operacao = (MIR >> 16) & 0b111111;
-	MIR_Deslocador = (MIR >> 22) & 0b11;
-	MIR_pulo = (MIR >> 24) & 0b111;
-	MPC = (MIR >> 27) & 0b111111111;
+void decodificar_microinstrucao() {
+    microinstrucao mir = regs.MIR;
+    sinal.B          = (mir)        & 0b1111;
+    sinal.MEM        = (mir >> 4)   & 0b111;
+    sinal.C          = (mir >> 7)   & 0x1FF;
+    sinal.Operacao   = (mir >> 16)  & 0b111111;
+    sinal.Deslocador = (mir >> 22)  & 0b11;
+    sinal.Pulo       = (mir >> 24)  & 0b111;
+    regs.MPC         = (mir >> 27)  & 0x1FF;
 }
 
-void atribuir_barramento_B(){
-	switch(MIR_B){
-		case 0: Barramento_B = MDR;				break;
-		case 1: Barramento_B = PC;				break;
-		//O caso 2 carrega o MBR com sinal fazendo a extensão de sinal, ou seja, copia-se o bit mais significativo do MBR para as 24 posições mais significativas do barramento B.
-		case 2: Barramento_B = MBR;
-			if(MBR & (0b10000000))
-					Barramento_B = Barramento_B | (0b111111111111111111111111 << 8);
-										break;
-		case 3: Barramento_B = MBR;				break;
-		case 4: Barramento_B = SP;				break;
-		case 5: Barramento_B = LV;				break;
-		case 6: Barramento_B = CPP;				break;
-		case 7: Barramento_B = TOS;				break;
-		case 8: Barramento_B = OPC;				break;
-		default: Barramento_B = -1;				break; 
-	}
+palavra ler_registrador(byte codigo) {
+    switch (codigo) {
+        case 0: return regs.MDR;
+        case 1: return regs.PC;
+        case 2: return (regs.MBR & 0x80) ? (regs.MBR | 0xFFFFFF00) : regs.MBR;
+        case 3: return regs.MBR;
+        case 4: return regs.SP;
+        case 5: return regs.LV;
+        case 6: return regs.CPP;
+        case 7: return regs.TOS;
+        case 8: return regs.OPC;
+        default: return 0;
+    }
 }
 
-void realizar_operacao_ALU(){
-	switch(MIR_Operacao){
-		//Cada operação da ULA é representado pela sequencia dos bits de operação. Cada operação útil foi convertida para inteiro para facilitar a escrita do switch
-		case 12: Barramento_C = H & Barramento_B;		break;
-		case 17: Barramento_C = 1;			break;
-		case 18: Barramento_C = -1;			break;
-		case 20: Barramento_C = Barramento_B;			break;
-		case 24: Barramento_C = H;			break;
-		case 26: Barramento_C = ~H;			break;
-		case 28: Barramento_C = H | Barramento_B;		break;
-		case 44: Barramento_C = ~Barramento_B;			break;
-		case 53: Barramento_C = Barramento_B + 1;		break;
-		case 54: Barramento_C = Barramento_B - 1;		break;
-		case 57: Barramento_C = H + 1;		break;
-		case 59: Barramento_C = -H;			break;
-		case 60: Barramento_C = H + Barramento_B;		break;
-		case 61: Barramento_C = H + Barramento_B + 1;	break;
-		case 63: Barramento_C = Barramento_B - H;		break;
-
-		default: break;
-	}
-
-	if(Barramento_C){
-		N = 0;
-		Z = 1;
-	} else{
-		N = 1;
-		Z = 0;
-	}
-
-	switch(MIR_Deslocador){
-		case 1: Barramento_C = Barramento_C << 8; break;
-		case 2: Barramento_C = Barramento_C >> 1; break;		
-	}
+void atribuir_barramento_B() {
+    busB = ler_registrador(sinal.B);
 }
 
-void atribuir_barramento_C(){
-	if(MIR_C & 0b000000001)   MAR = Barramento_C;
-	if(MIR_C & 0b000000010)   MDR = Barramento_C;
-	if(MIR_C & 0b000000100)   PC  = Barramento_C;
-	if(MIR_C & 0b000001000)   SP  = Barramento_C;
-	if(MIR_C & 0b000010000)   LV  = Barramento_C;
-	if(MIR_C & 0b000100000)   CPP = Barramento_C;
-	if(MIR_C & 0b001000000)   TOS = Barramento_C;
-	if(MIR_C & 0b010000000)   OPC = Barramento_C;
-	if(MIR_C & 0b100000000)   H   = Barramento_C;
+void realizar_operacao_ALU() {
+    switch (sinal.Operacao) {
+        case 12: busC = regs.H & busB; break;
+        case 17: busC = 1; break;
+        case 18: busC = -1; break;
+        case 20: busC = busB; break;
+        case 24: busC = regs.H; break;
+        case 26: busC = ~regs.H; break;
+        case 28: busC = regs.H | busB; break;
+        case 44: busC = ~busB; break;
+        case 53: busC = busB + 1; break;
+        case 54: busC = busB - 1; break;
+        case 57: busC = regs.H + 1; break;
+        case 59: busC = -regs.H; break;
+        case 60: busC = regs.H + busB; break;
+        case 61: busC = regs.H + busB + 1; break;
+        case 63: busC = busB - regs.H; break;
+        default: busC = 0; break;
+    }
+
+    Z = (busC == 0);
+    N = !Z;
+
+    switch (sinal.Deslocador) {
+        case 1: busC <<= 8; break;
+        case 2: busC >>= 1; break;
+    }
 }
 
-void operar_memoria(){
-	// Multiplicação por 4 é necessaria, pois as portas MAR e MDR leem palavras consecutivas na memoria
-	if(MIR_MEM & 0b001) MBR = Memoria[PC]; 
-	if(MIR_MEM & 0b010) memcpy(&MDR, &Memoria[MAR*4], 4);
-	if(MIR_MEM & 0b100) memcpy(&Memoria[MAR*4], &MDR, 4);
+void atribuir_barramento_C() {
+    if (sinal.C & 0x001) regs.MAR = busC;
+    if (sinal.C & 0x002) regs.MDR = busC;
+    if (sinal.C & 0x004) regs.PC  = busC;
+    if (sinal.C & 0x008) regs.SP  = busC;
+    if (sinal.C & 0x010) regs.LV  = busC;
+    if (sinal.C & 0x020) regs.CPP = busC;
+    if (sinal.C & 0x040) regs.TOS = busC;
+    if (sinal.C & 0x080) regs.OPC = busC;
+    if (sinal.C & 0x100) regs.H   = busC;
 }
 
-void pular(){
-	if(MIR_pulo & 0b001) MPC = MPC | (N << 8);
-	if(MIR_pulo & 0b010) MPC = MPC | (Z << 8);
-	if(MIR_pulo & 0b100) MPC = MPC | (MBR);
+void operar_memoria() {
+    if (sinal.MEM & 0b001) regs.MBR = Memoria[regs.PC];
+    if (sinal.MEM & 0b010) memcpy(&regs.MDR, &Memoria[regs.MAR * 4], 4);
+    if (sinal.MEM & 0b100) memcpy(&Memoria[regs.MAR * 4], &regs.MDR, 4);
 }
 
-void exibir_processos(){
-
-	if(LV && SP){
-		printf("\t\t  PILHA DE OPERANDOS\n");
-		printf("========================================\n");
-		printf("     END");
-		printf("\t   BINARIO DO VALOR");
-		printf(" \t\tVALOR\n");
-		for(int i = SP ; i >= LV ; i--){
-			palavra valor;
-			memcpy(&valor, &Memoria[i*4],4);			
-			
-			if(i == SP) printf("SP ->");
-			else if(i == LV) printf("LV ->");
-			else printf("     ");
-
-			printf("%X ",i);
-			binario(&valor, 1); printf(" ");			
-			printf("%d\n", valor);
-		}
-
-		printf("========================================\n");
-	}
-
-	if(PC >= 0x0401) {
-		printf("\n\t\t\tArea do Programa\n");
-		printf("========================================\n");
-		printf("\t\tBinario");
-		printf("\t HEX");
-		printf("  END DE BYTE\n");
-		for(int i = PC - 2; i <= PC + 3 ; i++){
-			if(i == PC) printf("Em execução >>  ");
-			else printf("\t\t");
-			binario(&Memoria[i], 2);
-			printf(" 0x%02X ", Memoria[i]);
-			printf("\t%X\n", i);
-		}
-		printf("========================================\n\n");
-	}
-
-	printf("\t\tREGISTRADORES\n");
-	printf("\tBINARIO");
-	printf("\t\t\t\tHEX\n");
-	printf("MAR: "); binario(&MAR, 3); printf("\t%x\n", MAR);
-	printf("MDR: "); binario(&MDR, 3); printf("\t%x\n", MDR);
-	printf("PC:  "); binario(&PC, 3); printf("\t%x\n", PC);
-	printf("MBR: \t\t"); binario(&MBR, 2); printf("\t\t%x\n", MBR);
-	printf("SP:  "); binario(&SP,3); printf("\t%x\n", SP);
-	printf("LV:  "); binario(&LV,3); printf("\t%x\n", LV);
-	printf("CPP: "); binario(&CPP,3); printf("\t%x\n", CPP);
-	printf("TOS: "); binario(&TOS,3); printf("\t%x\n", TOS);
-	printf("OPC: "); binario(&OPC, 3); printf("\t%x\n", OPC);
-	printf("H:   "); binario(&H, 3); printf("\t%x\n", H);
-
-	printf("MPC: \t\t"); binario(&MPC, 5); printf("\t%x\n", MPC);
-	printf("MIR: "); binario(&MIR, 4); printf("\n");
-
-	getchar();
+void pular() {
+    if (sinal.Pulo & 0b001) regs.MPC |= (N << 8);
+    if (sinal.Pulo & 0b010) regs.MPC |= (Z << 8);
+    if (sinal.Pulo & 0b100) regs.MPC |= regs.MBR;
 }
 
-
-//FUNÇÃO RESPONSAVEL POR PRINTAR OS VALORES EM BINARIO
-//TIPO 1: Imprime o binário de 4 bytes seguidos 
-//TIPO 2: Imprime o binário de 1 byte
-//TIPO 3: Imprime	o binario de uma palavra 
-//TIPO 4: Imprime o binário de uma microinstrução
-//TIPO 5: Imprime o binário dos 9 bits do MPC
-void binario(void* valor, int tipo){
-	switch(tipo){
-		case 1: {
-			printf(" ");
-			byte aux;
-			byte* valorAux = (byte*)valor;
-				
-			for(int i = 3; i >= 0; i--){
-				aux = *(valorAux + i);
-				for(int j = 0; j < 8; j++){
-					printf("%d", (aux >> 7) & 0b1);
-					aux = aux << 1;
-				}
-				printf(" ");
-			}		
-		} break;
-		case 2:{
-			byte aux;
-			
-			aux = *((byte*)(valor));
-			for(int j = 0; j < 8; j++){
-				printf("%d", (aux >> 7) & 0b1);
-				aux = aux << 1;
-			}
-		} break;
-
-		case 3: {
-			palavra aux;			
-			aux = *((palavra*)(valor));
-			for(int j = 0; j < 32; j++){
-				printf("%d", (aux >> 31) & 0b1);
-				aux = aux << 1;
-			}
-		} break;
-
-		case 4: {
-			microinstrucao aux;		
-			aux = *((microinstrucao*)(valor));
-			for(int j = 0; j < 36; j++){
-				if ( j == 9 || j == 12 || j == 20 || j == 29 || j == 32) printf(" ");
-
-				printf("%ld", (aux >> 35) & 0b1);
-				aux = aux << 1;
-			}
-		} break;
-		case 5: {
-			palavra aux;
-		
-			aux = *((palavra*)(valor)) << 23;
-			for(int j = 0; j < 9; j++){
-				printf("%d", (aux >> 31) & 0b1);
-				aux = aux << 1;
-			}
-		} break;
-	}
+void exibir_estado() {
+    printf("\n==== REGISTRADORES ====\n");
+    printf("MAR: "); print_bin(&regs.MAR, 4); printf("\n");
+    printf("MDR: "); print_bin(&regs.MDR, 4); printf("\n");
+    printf("PC : "); print_bin(&regs.PC, 4); printf("\n");
+    printf("MBR: "); print_bin(&regs.MBR, 1); printf("\n");
+    printf("SP : "); print_bin(&regs.SP, 4); printf("\n");
+    printf("LV : "); print_bin(&regs.LV, 4); printf("\n");
+    printf("CPP: "); print_bin(&regs.CPP, 4); printf("\n");
+    printf("TOS: "); print_bin(&regs.TOS, 4); printf("\n");
+    printf("OPC: "); print_bin(&regs.OPC, 4); printf("\n");
+    printf("H  : "); print_bin(&regs.H, 4); printf("\n");
+    printf("MPC: "); print_bin(&regs.MPC, 4); printf("\n");
+    printf("MIR: "); print_bin(&regs.MIR, 8); printf("\n");
+    getchar();
 }
+
+void print_bin(void *valor, size_t bytes) {
+    byte *data = (byte *)valor;
+    for (int i = bytes - 1; i >= 0; i--) {
+        for (int j = 7; j >= 0
